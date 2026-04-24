@@ -1149,6 +1149,13 @@ const Renderer = struct {
         try self.writer.writeAll("};\n");
     }
 
+    fn renderSType(
+        self: *Self,
+        stype: []const u8,
+    ) !void {
+        try self.writeIdentifierWithCase(.snake, stype["VK_STRUCTURE_TYPE_".len..]);
+    }
+
     fn renderContainerDefaultField(self: *Self, name: []const u8, container: reg.Container, field: reg.Container.Field) !void {
         if (mem.eql(u8, field.name, "sType")) {
             if (container.stype == null) {
@@ -1165,7 +1172,7 @@ const Renderer = struct {
             _ = self.structure_types.get(stype) orelse return;
 
             try self.writer.writeAll(" = .");
-            try self.writeIdentifierWithCase(.snake, stype["VK_STRUCTURE_TYPE_".len..]);
+            try self.renderSType(stype);
         } else if (field.field_type == .name and mem.eql(u8, "VkBool32", field.field_type.name) and isFeatureStruct(name, container.extends)) {
             try self.writer.writeAll(" = .false");
         } else if (field.is_optional) {
@@ -2120,6 +2127,33 @@ const Renderer = struct {
 
         try self.writer.writeAll("{\n");
         try self.renderSliceLenAsserts(wrapped_name, params);
+
+        const do_memset = blk: {
+            if (data_type == .name) {
+                const decl = self.resolveDeclaration(data_type.name) orelse return error.InvalidRegistry;
+                if (decl == .container and decl.container.stype != null) {
+                    try self.writer.writeAll(
+                        \\const initializer = comptime blk: {
+                        \\  var src: 
+                    );
+                    try self.renderName(data_type.name);
+                    try self.writer.writeAll(
+                        \\ = undefined;
+                        \\  src.sType = .
+                    );
+                    try self.renderSType(decl.container.stype.?);
+                    try self.writer.writeAll(
+                        \\;
+                        \\  src.pNext = null;
+                        \\  break :blk src;
+                        \\  };
+                    );
+                    break :blk true;
+                }
+            }
+            break :blk false;
+        };
+
         try self.writer.writeAll("    var count: ");
         try self.renderTypeInfo(count_type);
         try self.writer.writeAll(" = undefined;\n");
@@ -2140,10 +2174,10 @@ const Renderer = struct {
         try self.writer.writeAll("&count, null);\n");
 
         if (returns_vk_result) {
-            try self.writer.writeAll(
-                \\data = try allocator.realloc(data, count);
-                \\result = try
-            );
+            if (do_memset) try self.writer.writeAll("const prev_count = data.len;");
+            try self.writer.writeAll("data = try allocator.realloc(data, count);");
+            if (do_memset) try self.writer.writeAll("@memset(data[prev_count..], initializer);");
+            try self.writer.writeAll("result = try ");
         } else {
             try self.writer.writeAll("const data = try allocator.alloc(");
             try self.renderTypeInfo(data_type);
@@ -2151,6 +2185,7 @@ const Renderer = struct {
                 \\, count);
                 \\errdefer allocator.free(data);
             );
+            if (do_memset) try self.writer.writeAll("@memset(data, initializer);");
         }
 
         try self.renderAllocCallParams(wrapped_name, params);
