@@ -347,7 +347,7 @@ fn destroyFramebuffers(gc: *const GraphicsContext, allocator: Allocator, framebu
 fn createRenderPass(gc: *const GraphicsContext, swapchain: Swapchain) !vk.RenderPass {
     const color_attachment = vk.AttachmentDescription{
         .format = swapchain.surface_format.format,
-        .samples = .{ .@"1_bit" = true },
+        .samples = .@"1_bit",
         .load_op = .clear,
         .store_op = .store,
         .stencil_load_op = .dont_care,
@@ -394,12 +394,12 @@ fn createPipeline(
 
     const pssci = [_]vk.PipelineShaderStageCreateInfo{
         .{
-            .stage = .{ .vertex_bit = true },
+            .stage = .vertex_bit,
             .module = vert,
             .p_name = "main",
         },
         .{
-            .stage = .{ .fragment_bit = true },
+            .stage = .fragment_bit,
             .module = frag,
             .p_name = "main",
         },
@@ -438,7 +438,7 @@ fn createPipeline(
     };
 
     const pmsci = vk.PipelineMultisampleStateCreateInfo{
-        .rasterization_samples = .{ .@"1_bit" = true },
+        .rasterization_samples = .@"1_bit",
         .sample_shading_enable = .false,
         .min_sample_shading = 1,
         .alpha_to_coverage_enable = .false,

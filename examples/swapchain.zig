@@ -58,7 +58,7 @@ pub const Swapchain = struct {
             .queue_family_index_count = qfi.len,
             .p_queue_family_indices = &qfi,
             .pre_transform = caps.current_transform,
-            .composite_alpha = .{ .opaque_bit_khr = true },
+            .composite_alpha = .opaque_bit_khr,
             .present_mode = present_mode,
             .clipped = .true,
             .old_swapchain = old_handle,

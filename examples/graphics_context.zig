@@ -253,10 +253,15 @@ const QueueAllocation = struct {
     present_family: u32,
 };
 
-fn debugUtilsMessengerCallback(severity: vk.DebugUtilsMessageSeverityFlagsEXT, msg_type: vk.DebugUtilsMessageTypeFlagsEXT, callback_data: ?*const vk.DebugUtilsMessengerCallbackDataEXT, _: ?*anyopaque) callconv(.c) vk.Bool32 {
-    const severity_str = if (severity.verbose_bit_ext) "verbose" else if (severity.info_bit_ext) "info" else if (severity.warning_bit_ext) "warning" else if (severity.error_bit_ext) "error" else "unknown";
+fn debugUtilsMessengerCallback(severity: vk.DebugUtilsMessageSeverityFlagBitsEXT, msg_types: vk.DebugUtilsMessageTypeFlagsEXT, callback_data: ?*const vk.DebugUtilsMessengerCallbackDataEXT, _: ?*anyopaque) callconv(.c) vk.Bool32 {
+    const severity_str = switch (severity) {
+        .verbose_bit_ext => "verbose",
+        .info_bit_ext => "info",
+        .warning_bit_ext => "warning",
+        .error_bit_ext => "error"
+    };
 
-    const type_str = if (msg_type.general_bit_ext) "general" else if (msg_type.validation_bit_ext) "validation" else if (msg_type.performance_bit_ext) "performance" else if (msg_type.device_address_binding_bit_ext) "device addr" else "unknown";
+    const type_str = if (msg_types.general_bit_ext) "general" else if (msg_types.validation_bit_ext) "validation" else if (msg_types.performance_bit_ext) "performance" else if (msg_types.device_address_binding_bit_ext) "device addr" else "unknown";
 
     const message: [*c]const u8 = if (callback_data) |cb_data| cb_data.p_message else "NO MESSAGE!";
     std.debug.print("[{s}][{s}]. Message:\n  {s}\n", .{ severity_str, type_str, message });

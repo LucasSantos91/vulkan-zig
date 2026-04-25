@@ -28,7 +28,7 @@ const preamble =
     \\    else
     \\        .c;
     // Note: Keep in sync with flag_functions
-    \\pub fn FlagsMixin(comptime FlagsType: type) type {
+    \\pub fn FlagsMixin(comptime FlagsType: type, comptime FlagBitsType: type) type {
     \\    return struct {
     \\        pub const IntType = @typeInfo(FlagsType).@"struct".backing_integer.?;
     \\        pub fn toInt(self: FlagsType) IntType {
@@ -52,11 +52,12 @@ const preamble =
     \\        pub fn contains(lhs: FlagsType, rhs: FlagsType) bool {
     \\            return toInt(intersect(lhs, rhs)) == toInt(rhs);
     \\        }
-    \\    };
-    \\}
-    // Note: Keep in sync with flag_functions
-    \\fn FlagFormatMixin(comptime FlagsType: type) type {
-    \\    return struct {
+    \\        pub fn toBit(self: FlagsType) FlagBitsType {
+    \\            return FlagBitsType.fromFlags(self);
+    \\        }
+    \\        pub fn fromBit(bit: FlagBitsType) FlagsType {
+    \\            return bit.toFlags();
+    \\        }
     \\        pub fn format(
     \\            self: FlagsType,
     \\            writer: anytype,
@@ -80,6 +81,19 @@ const preamble =
     \\        }
     \\    };
     \\}
+    // Keep in sync with definition of flag_bits_functions
+    \\pub fn FlagBitsMixin(comptime FlagsType: type, comptime FlagBitsType: type) type {
+    \\    return struct {
+    \\        pub fn toFlags(bit: FlagBitsType) FlagsType {
+    \\            return @bitCast(@intFromEnum(bit));
+    \\        }
+    \\        pub fn fromFlags(mask: FlagsType) FlagBitsType {
+    \\            const n: @typeInfo(FlagsType).@"struct".backing_integer.? = @bitCast(mask);
+    \\            return @enumFromInt(n);
+    \\        }
+    \\    };
+    \\}
+    \\
     \\pub const Version = packed struct(u32) {
     \\    patch: u12,
     \\    minor: u10,
@@ -107,6 +121,9 @@ const flag_functions: []const []const u8 = &.{
     "complement",
     "subtract",
     "contains",
+    "toBit",
+    "fromBit",
+    "format",
 };
 
 // Keep in sync with definition of command_flag_functions
@@ -166,6 +183,12 @@ const command_flag_functions: []const []const u8 = &.{
     "complement",
     "subtract",
     "contains",
+};
+
+// Keep in sync with above definition of FlagBits
+const flag_bits_functions: []const []const u8 = &.{
+    "toFlags",
+    "fromFlags",
 };
 
 const builtin_types = std.StaticStringMap([]const u8).initComptime(.{
@@ -769,13 +792,6 @@ const Renderer = struct {
         if (builtin_types.get(name)) |zig_name| {
             try self.writer.writeAll(zig_name);
             return;
-        } else if (try self.extractBitflagName(name)) |bitflag_name| {
-            try self.writeIdentifierFmt("{s}Flags{s}{s}", .{
-                trimVkNamespace(bitflag_name.base_name),
-                @as([]const u8, if (bitflag_name.revision) |revision| revision else ""),
-                @as([]const u8, if (bitflag_name.tag) |tag| tag else ""),
-            });
-            return;
         } else if (mem.startsWith(u8, name, "vk")) {
             // Function type, always render with the exact same text for linking purposes.
             try self.writeIdentifier(name);
@@ -816,25 +832,7 @@ const Renderer = struct {
         for (command_ptr.params) |param| {
             try self.renderParamName(param.name);
             try self.writer.writeAll(": ");
-
-            blk: {
-                if (param.param_type == .name) {
-                    if (try self.extractBitflagName(param.param_type.name)) |bitflag_name| {
-                        try self.writeIdentifierFmt("{s}Flags{s}{s}", .{
-                            trimVkNamespace(bitflag_name.base_name),
-                            @as([]const u8, if (bitflag_name.revision) |revision| revision else ""),
-                            @as([]const u8, if (bitflag_name.tag) |tag| tag else ""),
-                        });
-                        break :blk;
-                    } else if (self.isFlags(param.param_type.name)) {
-                        try self.renderTypeInfo(param.param_type);
-                        break :blk;
-                    }
-                }
-
-                try self.renderTypeInfo(param.param_type);
-            }
-
+            try self.renderTypeInfo(param.param_type);
             try self.writer.writeAll(", ");
         }
         try self.writer.writeAll(") callconv(vulkan_call_conv)");
@@ -1263,16 +1261,35 @@ const Renderer = struct {
     }
 
     fn renderBitmaskBits(self: *Self, name: []const u8, bits: reg.Enum) !void {
-        try self.writer.writeAll("pub const ");
-        try self.renderName(name);
-        const flags_type = try bitmaskFlagsType(bits.bitwidth);
-        try self.writer.print(" = packed struct({s}) {{", .{flags_type});
-
         const bitflag_name = (try self.extractBitflagName(name)) orelse return error.InvalidRegistry;
+        try self.writer.writeAll("pub const ");
+        try self.writeIdentifierFmt("{s}Flags{s}{s}", .{
+            trimVkNamespace(bitflag_name.base_name),
+            @as([]const u8, if (bitflag_name.revision) |revision| revision else ""),
+            @as([]const u8, if (bitflag_name.tag) |tag| tag else ""),
+        });
+        const flags_type = try bitmaskFlagsType(bits.bitwidth);
+        const flags_index = std.mem.lastIndexOf(u8, name, "Flags") orelse return error.InvalidRegistry;
 
         if (bits.fields.len == 0) {
-            try self.writer.print("_reserved_bits: {s} = 0,", .{flags_type});
+            // stupid VkPrivateDataSlotCreateFlagBits
+            // see https://github.com/KhronosGroup/Vulkan-Docs/issues/1754
+
+            try self.writer.print(
+                "= packed struct({[flags_type]s}) {{ _reserved_bits: {[flags_type]s} = 0,",
+                .{.{ .flags_type = flags_type }},
+            );
+
+            try self.writer.writeAll("}};\n");
+
+            try self.writer.print(
+                "pub const {s}FlagBits{s} = enum({s}) {{}};",
+                .{ name[2..flags_index], name[flags_index + "Flags".len ..], flags_type },
+            );
+            try self.renderFlagBitsFunctions();
+            try self.writer.writeAll("};");
         } else {
+            try self.writer.print(" = packed struct({s}) {{", .{flags_type});
             var flags_by_bitpos = [_]?struct {
                 name: []const u8,
                 comment: ?[]const u8,
@@ -1299,9 +1316,28 @@ const Renderer = struct {
 
                 try self.writer.writeAll(": bool = false,");
             }
+            try self.renderFlagFunctions(name, "FlagsMixin", flag_functions, null);
+            try self.writer.writeAll("};\npub const ");
+            try self.writeIdentifierFmt("{s}FlagBits{s}{s}", .{
+                trimVkNamespace(bitflag_name.base_name),
+                @as([]const u8, if (bitflag_name.revision) |revision| revision else ""),
+                @as([]const u8, if (bitflag_name.tag) |tag| tag else ""),
+            });
+            try self.writer.print(" = enum({s}) {{", .{flags_type});
+
+            for (flags_by_bitpos[0..bits.bitwidth], 0..) |maybe_flag, bitpos| {
+                if (maybe_flag) |flag| {
+                    if (flag.comment) |comment| {
+                        try self.renderDocComment(comment);
+                    }
+                    const field_name = try extractBitflagFieldName(bitflag_name, flag.name);
+                    try self.writeIdentifierWithCase(.snake, field_name);
+                    try self.writer.print(" = 1 << {},", .{bitpos});
+                }
+            }
+            try self.renderFlagBitsFunctions(name);
+            try self.writer.writeAll("};\n");
         }
-        try self.renderFlagFunctions(name, "FlagsMixin", flag_functions, null);
-        try self.writer.writeAll("};\n");
     }
 
     fn renderBitmask(self: *Self, name: []const u8, bitmask: reg.Bitmask) !void {
@@ -1322,22 +1358,39 @@ const Renderer = struct {
         }
     }
 
-    fn renderFlagFunctions(
+    fn renderFlagFunctionsImpl(
         self: *Self,
-        name: []const u8,
-        mixin: []const u8,
+        base_name: []const u8,
+        suffix: []const u8,
         functions: []const []const u8,
-        name_suffix: ?[]const u8,
+        mixin: []const u8,
     ) !void {
         try self.writer.writeAll("\n");
         for (functions) |function| {
-            try self.writer.print("pub const {s} = {s}(", .{ function, mixin });
-            try self.renderName(name);
-            try self.writer.print("{s}).{s};\n", .{ name_suffix orelse "", function });
+            try self.writer.print(
+                "pub const {[function]s} = {[mixin]s}({[base_name]s}Flags{[suffix]}, {[base_name]s}FlagBits{[suffix]}).{[function]s};\n",
+                .{
+                    .function = function,
+                    .base_name = base_name,
+                    .suffix = suffix,
+                    .mixin = mixin,
+                },
+            );
         }
-        try self.writer.writeAll("pub const format = FlagFormatMixin(");
-        try self.renderName(name);
-        try self.writer.print("{s}).format;\n", .{name_suffix orelse ""});
+    }
+    fn renderFlagFunctions(
+        self: *Self,
+        base_name: []const u8,
+        suffix: []const u8,
+    ) !void {
+        try self.renderFlagFunctionsImpl(base_name, suffix, flag_functions, "FlagsMixin");
+    }
+    fn renderFlagBitsFunctions(
+        self: *Self,
+        base_name: []const u8,
+        suffix: []const u8,
+    ) !void {
+        try self.renderFlagFunctionsImpl(base_name, suffix, flag_bits_functions, "FlagBitsMixin");
     }
 
     fn renderHandle(self: *Self, name: []const u8, handle: reg.Handle) !void {
@@ -1351,11 +1404,7 @@ const Renderer = struct {
     fn renderAlias(self: *Self, name: []const u8, alias: reg.Alias) !void {
         if (alias.target == .other_command) {
             return;
-        } else if ((try self.extractBitflagName(name)) != null) {
-            // Don't make aliases of the bitflag names, as those are replaced by just the flags type
-            return;
         }
-
         try self.writer.writeAll("pub const ");
         try self.renderName(name);
         try self.writer.writeAll(" = ");
